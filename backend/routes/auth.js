@@ -13,9 +13,9 @@ const router = express.Router();
 
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, user_type } = req.body; // Added user_type
 
-    console.log("Registration attempt:", { name, email });
+    console.log("Registration attempt:", { name, email, user_type });
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -36,6 +36,14 @@ router.post("/register", async (req, res) => {
         success: false,
         message: "Password must be at least 6 characters with letters and numbers",
       });
+    }
+
+    // Added user_type validation
+    if (user_type && user_type !== "admin" && user_type !== "jobseeker") {
+        return res.status(400).json({
+            success: false,
+            message: "Invalid user type"
+        });
     }
 
     const existingUserQuery = "SELECT id FROM users WHERE email = $1";
@@ -63,7 +71,7 @@ router.post("/register", async (req, res) => {
         name.trim(),
         email.toLowerCase().trim(),
         passwordHash,
-        'jobseeker'
+        user_type || 'jobseeker' // Use provided user_type or default to jobseeker
     ]);
 
     const newUser = result.rows[0];
@@ -74,7 +82,7 @@ router.post("/register", async (req, res) => {
       message: "User registered successfully!",
       user: {
         id: newUser.id,
-        name: newUser.full_name, // Fix: Use full_name
+        name: newUser.full_name,
         email: newUser.email,
         userType: newUser.user_type,
         createdAt: newUser.created_at,
@@ -127,7 +135,6 @@ router.post("/login", async (req, res) => {
     const user = result.rows[0];
     console.log("User found:", user.id);
 
-    // Fix: Use user.password (not user.password_hash)
     const isPasswordValid = await comparePassword(password, user.password);
 
     if (!isPasswordValid) {
@@ -140,7 +147,6 @@ router.post("/login", async (req, res) => {
 
     console.log("Password verified for user:", user.id);
 
-    // Fix: Pass user.user_type to generateToken
     const token = generateToken(user.id, user.user_type);
     console.log("Token generated for user:", user.id);
 
@@ -150,7 +156,7 @@ router.post("/login", async (req, res) => {
       token,
       user: {
         id: user.id,
-        name: user.full_name, // Fix: Use full_name
+        name: user.full_name,
         email: user.email,
         userType: user.user_type,
         createdAt: user.created_at,
