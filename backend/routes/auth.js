@@ -1,5 +1,9 @@
 const express = require("express");
 const pool = require("../db");
+const { testEmailConnection,sendWelcomeEmail } = require("../emailservice");
+
+
+
 
 const {
   hashPassword,
@@ -7,7 +11,10 @@ const {
   generateToken,
   isValidEmail,
   isValidPassword,
+  generateRandomToken   // <-- ADD THIS!!
 } = require("../utils/auth");
+
+const { sendVerificationEmail } = require("../emailservice");
 
 const router = express.Router();
 
@@ -61,31 +68,45 @@ router.post("/register", async (req, res) => {
     const passwordHash = await hashPassword(password);
     console.log("Password hashed successfully");
 
-    const insertUserQuery = `
-        INSERT INTO users (full_name, email, password, user_type) 
-        VALUES ($1, $2, $3, $4) 
-        RETURNING id, full_name, email, user_type, created_at
-    `;
+   const verificationtoken = generateRandomToken(); // Use your util; don't use JWT for this
+// Add the field 'false' for email_verified, then the verification token:
+const insertUserQuery = `
+    INSERT INTO users (full_name, email, password, user_type, email_verified, verification_token) 
+    VALUES ($1, $2, $3, $4, $5, $6) 
+    RETURNING id, full_name, email, user_type, created_at
+`;
+const result = await pool.query(insertUserQuery, [
+    name.trim(),
+    email.toLowerCase().trim(),
+    passwordHash,
+    user_type || 'jobseeker',
+    false,
+    verificationtoken
+]);
 
-    const result = await pool.query(insertUserQuery, [
-        name.trim(),
-        email.toLowerCase().trim(),
-        passwordHash,
-        user_type || 'jobseeker' // Use provided user_type or default to jobseeker
-    ]);
 
     const newUser = result.rows[0];
     console.log("User created:", newUser.id);
 
-    res.status(201).json({
+    try{
+      await sendVerificationEmail(email,verificationtoken,name);
+      console.log("Verification email sent successfully");
+    } catch (emailError){
+      console.log("Email sendind failed:",emailError);
+    }
+
+  res.status(201).json({
       success: true,
-      message: "User registered successfully!",
+      message: `Registration successful! 
+      Please check your email and click the verification 
+      link to activate your account.`,
       user: {
         id: newUser.id,
         name: newUser.full_name,
         email: newUser.email,
-        userType: newUser.user_type,
         createdAt: newUser.created_at,
+        userType: newUser.user_type,
+        emailVerified: false,
       },
     });
   } catch (error) {
@@ -170,6 +191,10 @@ router.post("/login", async (req, res) => {
     });
   }
 });
+router.get("/test-email", async (req, res) => {
+    const result = await testEmailConnection();
+    res.json({ connected: result });
+});
 
 router.get("/test", (req, res) => {
   res.json({
@@ -178,5 +203,163 @@ router.get("/test", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+router.post('/verify-email', async (req, res) => {
+    try {
+        const { token } = req.query;
+
+        if (!token) {
+            return res.status(400).json({
+                success: false,
+                message: 'Verification token is required'
+            });
+        }
+
+        // ===== FIND USER WITH TOKEN =====
+        const result = await pool.query(`
+    SELECT id, full_name, email, email_verified FROM users WHERE verification_token = $1
+`, [token]);
+
+if (result.rows.length === 0) {
+    return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification token'
+    });
+}
+const user = result.rows[0]; // <-- user is defined here!
+
+// Now you can use user.email and user.full_name
+await sendWelcomeEmail(user.email, user.full_name);
+
+
+        // Check if already verified
+        if (user.email_verified) {
+            return res.json({
+                success: true,
+                message: 'Email is already verified'
+            });
+        }
+
+        // ===== VERIFY EMAIL =====
+        await pool.query(`
+            UPDATE users 
+            SET email_verified = true, 
+                verification_token = null,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+        `, [user.id]);
+
+        console.log('Email verified for user:', user.id);
+
+        // ===== SEND WELCOME EMAIL =====
+        try {
+            await sendWelcomeEmail(user.email, user.full_name);
+        } catch (emailError) {
+            console.error('Welcome email failed:', emailError);
+            // Don't fail verification if welcome email fails
+        }
+
+        res.json({
+            success: true,
+            message: 'Email verified successfully! Your account is now active.',
+            user: {
+                id: user.id,
+                name: user.full_name,
+                email: user.email,
+                emailVerified: true
+            }
+        });
+
+    } catch (error) {
+        console.error('Email verification error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+// GET route for email verification (handles email link clicks)
+router.get('/verify-email', async (req, res) => {
+    try {
+        const { token } = req.query; // GET request uses query params
+
+        if (!token) {
+            return res.status(400).send(`
+                <html>
+                    <body>
+                        <h2>❌ Verification Failed</h2>
+                        <p>Verification token is missing from the link.</p>
+                    </body>
+                </html>
+            `);
+        }
+
+        // Same logic as your POST route
+        const result = await pool.query(`
+            SELECT id, full_name, email, email_verified FROM users WHERE verification_token = $1
+        `, [token]);
+
+        if (result.rows.length === 0) {
+            return res.status(400).send(`
+                <html>
+                    <body>
+                        <h2>❌ Verification Failed</h2>
+                        <p>Invalid or expired verification token.</p>
+                    </body>
+                </html>
+            `);
+        }
+
+        const user = result.rows[0];
+
+        if (user.email_verified) {
+            return res.send(`
+                <html>
+                    <body>
+                        <h2>✅ Already Verified</h2>
+                        <p>Your email is already verified!</p>
+                    </body>
+                </html>
+            `);
+        }
+
+        // Verify the email
+        await pool.query(`
+            UPDATE users 
+            SET email_verified = true, 
+                verification_token = null
+            WHERE id = $1
+        `, [user.id]);
+
+        // Send welcome email
+        try {
+            await sendWelcomeEmail(user.email, user.full_name);
+        } catch (emailError) {
+            console.error('Welcome email failed:', emailError);
+        }
+
+        res.send(`
+            <html>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                    <h2 style="color: green;">✅ Email Verified Successfully!</h2>
+                    <p>Your account is now active. You can now log in to Job Portal.</p>
+                    <a href="http://localhost:3000/login" style="background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Login Now</a>
+                </body>
+            </html>
+        `);
+
+    } catch (error) {
+        console.error('Email verification error:', error);
+        res.status(500).send(`
+            <html>
+                <body>
+                    <h2>❌ Verification Error</h2>
+                    <p>Something went wrong. Please try again later.</p>
+                </body>
+            </html>
+        `);
+    }
+});
+
 
 module.exports = router;

@@ -1,6 +1,8 @@
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 require("dotenv").config(); // Load env variables
+const crypto = require('crypto');
+
 
 const hashPassword = async (password) => {
     try {
@@ -41,6 +43,15 @@ const isValidPassword = (password) => {
     const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{6,}$/;
     return passwordRegex.test(password);
 };
+const generateRandomToken = () => {
+    return crypto.randomBytes(32).toString('hex');
+};
+
+const generateExpiringToken = () => {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 3600000); // 1 hour from now
+    return { token, expires };
+};
 
 module.exports = {
     hashPassword,
@@ -48,4 +59,5 @@ module.exports = {
     generateToken,
     isValidEmail,
     isValidPassword,
+    generateRandomToken 
 };
