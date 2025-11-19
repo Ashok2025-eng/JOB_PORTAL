@@ -15,6 +15,9 @@ const {
 } = require("../utils/auth");
 
 const { sendVerificationEmail } = require("../emailservice");
+const{
+  requireEmailVerified,
+} = require("../middlewares/auth");
 
 const router = express.Router();
 
@@ -126,7 +129,7 @@ const result = await pool.query(insertUserQuery, [
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login",  async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -140,12 +143,21 @@ router.post("/login", async (req, res) => {
     }
 
     const findUserQuery = `
-        SELECT id, full_name, email, password, user_type, created_at 
+        SELECT id, full_name, email,email_verified, password, user_type, created_at 
         FROM users 
         WHERE email = $1
     `;
     const result = await pool.query(findUserQuery, [email.toLowerCase()]);
 
+
+    if (result.rows[0] && !result.rows[0].email_verified){
+      return res.status(401).json({
+        success : false,
+        message: "Please verify your email before logging in",
+      }
+       
+      )
+    }
     if (result.rows.length === 0) {
       return res.status(401).json({
         success: false,
@@ -284,14 +296,10 @@ router.get('/verify-email', async (req, res) => {
         const { token } = req.query; // GET request uses query params
 
         if (!token) {
-            return res.status(400).send(`
-                <html>
-                    <body>
-                        <h2>❌ Verification Failed</h2>
-                        <p>Verification token is missing from the link.</p>
-                    </body>
-                </html>
-            `);
+            return res.status(400).json({
+                success: false,
+                message: 'Verification token is missing from the link.'
+            });
         }
 
         // Same logic as your POST route
@@ -300,27 +308,19 @@ router.get('/verify-email', async (req, res) => {
         `, [token]);
 
         if (result.rows.length === 0) {
-            return res.status(400).send(`
-                <html>
-                    <body>
-                        <h2>❌ Verification Failed</h2>
-                        <p>Invalid or expired verification token.</p>
-                    </body>
-                </html>
-            `);
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid or expired verification token.'
+            });
         }
 
         const user = result.rows[0];
 
         if (user.email_verified) {
-            return res.send(`
-                <html>
-                    <body>
-                        <h2>✅ Already Verified</h2>
-                        <p>Your email is already verified!</p>
-                    </body>
-                </html>
-            `);
+            return res.json({
+                success: true,
+                message: 'Your email is already verified!'
+            });
         }
 
         // Verify the email
@@ -338,26 +338,22 @@ router.get('/verify-email', async (req, res) => {
             console.error('Welcome email failed:', emailError);
         }
 
-        res.send(`
-            <html>
-                <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-                    <h2 style="color: green;">✅ Email Verified Successfully!</h2>
-                    <p>Your account is now active. You can now log in to Job Portal.</p>
-                    <a href="http://localhost:3000/login" style="background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Login Now</a>
-                </body>
-            </html>
-        `);
+        res.json({
+            success: true,
+            message: 'Email verified successfully! Your account is now active.',
+            user: {
+                id: user.id,
+                email: user.email,
+                emailVerified: true
+            }
+        });
 
     } catch (error) {
         console.error('Email verification error:', error);
-        res.status(500).send(`
-            <html>
-                <body>
-                    <h2>❌ Verification Error</h2>
-                    <p>Something went wrong. Please try again later.</p>
-                </body>
-            </html>
-        `);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
     }
 });
 
